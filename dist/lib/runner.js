@@ -1,22 +1,51 @@
 import { spawn } from 'child_process';
-export async function runCommand(command, cwd = process.cwd(), timeoutMs = 300_000, onLine) {
+export async function runCommand(command, cwd = process.cwd(), timeoutMs = 300_000, onLine, signal) {
     return new Promise((resolve) => {
-        const proc = spawn(command, { cwd, shell: true, detached: false });
+        // detached:true so the child leads its OWN process group — killing -pid then reaps the whole
+        // tree (shell → test runner → worker processes), not just the shell. Both the timeout kill and
+        // the external "Stop" (signal) depend on this to actually stop a running suite; with the old
+        // detached:false the runner's worker children outlived the kill and the suite kept going.
+        const proc = spawn(command, { cwd, shell: true, detached: true });
         let stdout = '';
         let stderr = '';
         let settled = false;
-        const timer = setTimeout(() => {
-            if (settled)
-                return;
-            settled = true;
+        const killTree = () => {
             try {
                 process.kill(-proc.pid, 'SIGKILL');
             }
             catch {
-                proc.kill('SIGKILL');
+                try {
+                    proc.kill('SIGKILL');
+                }
+                catch { /* already gone */ }
             }
+        };
+        function cleanup() {
+            clearTimeout(timer);
+            signal?.removeEventListener('abort', onAbort);
+        }
+        const onAbort = () => {
+            if (settled)
+                return;
+            settled = true;
+            cleanup();
+            killTree();
+            resolve({ stdout, stderr, exitCode: 1, success: false, aborted: true });
+        };
+        const timer = setTimeout(() => {
+            if (settled)
+                return;
+            settled = true;
+            cleanup();
+            killTree();
             resolve({ stdout, stderr, exitCode: 1, success: false, timedOut: true });
         }, timeoutMs);
+        // Cancelled before we even spawned — kill immediately rather than run to completion.
+        if (signal?.aborted) {
+            onAbort();
+            return;
+        }
+        signal?.addEventListener('abort', onAbort, { once: true });
         function handleChunk(str, dest) {
             if (dest === 'stdout')
                 stdout += str;
@@ -35,14 +64,14 @@ export async function runCommand(command, cwd = process.cwd(), timeoutMs = 300_0
             if (settled)
                 return;
             settled = true;
-            clearTimeout(timer);
+            cleanup();
             resolve({ stdout, stderr, exitCode: code ?? 1, success: (code ?? 1) === 0 });
         });
         proc.on('error', (err) => {
             if (settled)
                 return;
             settled = true;
-            clearTimeout(timer);
+            cleanup();
             resolve({ stdout, stderr: err.message, exitCode: 1, success: false });
         });
     });

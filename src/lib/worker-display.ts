@@ -2,15 +2,18 @@ import chalk from 'chalk'
 
 export type WorkerState =
   | { phase: 'idle' }
+  | { phase: 'waiting'; file: string; since: number }
   | { phase: 'generating'; file: string }
   | { phase: 'writing'; file: string }
   | { phase: 'running'; file: string }
   | { phase: 'retrying'; file: string; attempt: number; max: number }
+  | { phase: 'regenerating'; file: string }
+  | { phase: 'fixing'; file: string }
   | { phase: 'passed'; file: string }
   | { phase: 'failed'; file: string }
 
 const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
-const ACTIVE: Set<WorkerState['phase']> = new Set(['generating', 'writing', 'running', 'retrying'])
+const ACTIVE: Set<WorkerState['phase']> = new Set(['waiting', 'generating', 'writing', 'running', 'retrying', 'regenerating', 'fixing'])
 // tip rotates every ~5 seconds at 80ms tick interval
 const TIP_TICKS = 62
 
@@ -27,6 +30,8 @@ export class WorkerDisplay {
   private tips: string[]
   private tipIndex = 0
   private successLabel: string
+  private winchHandler: (() => void) | null = null
+  private lastRenderedText = ''
 
   constructor(workerCount: number, total: number, tips: string[] = [], successLabel = 'passed') {
     this.states = Array.from({ length: workerCount }, () => ({ phase: 'idle' }) as WorkerState)
@@ -46,11 +51,30 @@ export class WorkerDisplay {
       }
       this.render()
     }, 80)
+
+    this.winchHandler = () => {
+      if (this.lastRenderedText) {
+        // Row math must use the REAL terminal width (clamping to 60 under-counts wrapped rows
+        // on a narrow terminal and leaves the cursor mid-block → corrupted redraw).
+        const newCols = Math.max(1, process.stdout.columns || 80)
+        this.rendered = this.countVisualLines(this.lastRenderedText, newCols)
+      }
+      this.render()
+    }
+    process.on('SIGWINCH', this.winchHandler)
   }
 
   update(workerId: number, state: WorkerState) {
     const prev = this.states[workerId]
     this.states[workerId] = state
+
+    if (state.phase === 'regenerating' || state.phase === 'fixing') {
+      // Fix failed — now trying regeneration (or: generate exhausted retries — now trying the
+      // fix specialist). Undo the failed count so the subsequent final phase (passed/failed) is
+      // the single counted outcome for this file.
+      if (prev.phase === 'failed') { this.done--; this.failedCount-- }
+      // Fall through to render the state (don't return early — non-TTY needs the log line)
+    } else
 
     if (prev.phase !== 'passed' && prev.phase !== 'failed') {
       if (state.phase === 'passed') { this.done++; this.passed++ }
@@ -66,6 +90,7 @@ export class WorkerDisplay {
 
   finish() {
     if (this.timer) { clearInterval(this.timer); this.timer = null }
+    if (this.winchHandler) { process.off('SIGWINCH', this.winchHandler); this.winchHandler = null }
     if (this.isTTY && this.rendered > 0) {
       process.stdout.write(`\x1B[${this.rendered}A\x1B[0J`)
       this.rendered = 0
@@ -79,15 +104,18 @@ export class WorkerDisplay {
       process.stdout.write(`\x1B[${this.rendered}A\x1B[0J`)
     }
 
-    const cols = Math.max(60, process.stdout.columns ?? 80)
+    // `cols` (min 60) governs how aggressively file paths are truncated; `realCols` is the
+    // actual width and must drive the wrap/row count (see countVisualLines call below).
+    const realCols = Math.max(1, process.stdout.columns || 80)
+    const cols = Math.max(60, realCols)
     const lines: string[] = ['']
 
     for (let i = 0; i < this.states.length; i++) {
       lines.push(this.formatRow(i, this.states[i], cols))
     }
 
-    const barWidth = Math.min(28, cols - 26)
-    const filled = this.total === 0 ? barWidth : Math.round(barWidth * this.done / this.total)
+    const barWidth = Math.max(1, Math.min(28, cols - 26))
+    const filled = Math.min(barWidth, this.total === 0 ? barWidth : Math.round(barWidth * this.done / this.total))
     const bar = chalk.green('█'.repeat(filled)) + chalk.dim('░'.repeat(barWidth - filled))
     const pct = this.total === 0 ? 100 : Math.round((this.done / this.total) * 100)
     const remaining = this.total - this.done
@@ -115,7 +143,19 @@ export class WorkerDisplay {
 
     const out = lines.join('\n')
     process.stdout.write(out)
-    this.rendered = (out.match(/\n/g) ?? []).length
+    this.lastRenderedText = out
+    this.rendered = this.countVisualLines(out, realCols)
+  }
+
+  private countVisualLines(text: string, cols: number): number {
+    const lines = text.split('\n')
+    const countTo = text.endsWith('\n') ? lines.length - 1 : lines.length
+    let total = 0
+    for (let i = 0; i < countTo; i++) {
+      const visLen = lines[i].replace(/\x1B\[[0-9;]*[\p{L}]/gu, '').length
+      total += Math.max(1, Math.ceil(visLen / cols))
+    }
+    return total
   }
 
   private formatRow(id: number, state: WorkerState, cols: number): string {
@@ -132,6 +172,13 @@ export class WorkerDisplay {
         icon = chalk.dim('○')
         label = chalk.dim('idle      ')
         break
+      case 'waiting': {
+        const elapsed = Math.floor((Date.now() - state.since) / 1000)
+        icon = chalk.dim('⌛')
+        label = chalk.dim(('wait ' + elapsed + 's').padEnd(10))
+        file = state.file
+        break
+      }
       case 'generating':
         icon = chalk.cyan(frame)
         label = chalk.cyan('generating')
@@ -150,6 +197,16 @@ export class WorkerDisplay {
       case 'retrying':
         icon = chalk.yellow('↺')
         label = chalk.yellow(`retry ${state.attempt}/${state.max}  `.slice(0, 10))
+        file = state.file
+        break
+      case 'regenerating':
+        icon = chalk.blueBright('↻')
+        label = chalk.blueBright('regen     ')
+        file = state.file
+        break
+      case 'fixing':
+        icon = chalk.magenta('⚒')
+        label = chalk.magenta('fixing    ')
         file = state.file
         break
       case 'passed':
@@ -178,12 +235,15 @@ export class WorkerDisplay {
   private plainLabel(state: WorkerState): string {
     switch (state.phase) {
       case 'idle':       return 'idle'
+      case 'waiting':    return `waiting     ${state.file}`
       case 'generating': return `generating  ${state.file}`
       case 'writing':    return `writing     ${state.file}`
       case 'running':    return `running     ${state.file}`
-      case 'retrying':   return `retry ${state.attempt}/${state.max}  ${state.file}`
-      case 'passed':     return `✓ passed    ${state.file}`
-      case 'failed':     return `✗ failed    ${state.file}`
+      case 'retrying':      return `retry ${state.attempt}/${state.max}  ${state.file}`
+      case 'regenerating':  return `↻ regen      ${state.file}`
+      case 'fixing':        return `⚒ fixing     ${state.file}`
+      case 'passed':        return `✓ passed    ${state.file}`
+      case 'failed':        return `✗ failed    ${state.file}`
     }
   }
 }

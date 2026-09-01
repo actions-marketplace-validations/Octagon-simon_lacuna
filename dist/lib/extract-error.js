@@ -15,8 +15,7 @@ const NOISE_PATTERNS = [
 const SIGNAL_PATTERNS = [
     /error/i,
     /fail/i,
-    /×\s+/, // vitest failing file marker
-    /✗\s+/,
+    /[×✕✗]\s+/, // vitest/jest per-test fail markers (×✕✗)
     /Expected/,
     /Received/,
     /AssertionError/,
@@ -79,6 +78,13 @@ export function extractTestFailure(rawOutput) {
                 break;
             }
         }
+    }
+    // Pass 2.7 — remove noise lines that snuck into context windows (e.g. ✓ passing-test
+    // lines adjacent to a "N tests | M failed" suite header). They add no signal value.
+    for (const i of [...include]) {
+        const trimmed = lines[i].trim();
+        if (trimmed && NOISE_PATTERNS.some((p) => p.test(trimmed)))
+            include.delete(i);
     }
     // Pass 3 — build output, skipping pure noise outside the windows and deduping blanks
     const kept = [];

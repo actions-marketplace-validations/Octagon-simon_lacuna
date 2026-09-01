@@ -1,6 +1,10 @@
 export type WorkerState = {
     phase: 'idle';
 } | {
+    phase: 'waiting';
+    file: string;
+    since: number;
+} | {
     phase: 'generating';
     file: string;
 } | {
@@ -14,6 +18,12 @@ export type WorkerState = {
     file: string;
     attempt: number;
     max: number;
+} | {
+    phase: 'regenerating';
+    file: string;
+} | {
+    phase: 'fixing';
+    file: string;
 } | {
     phase: 'passed';
     file: string;
@@ -34,11 +44,14 @@ export declare class WorkerDisplay {
     private tips;
     private tipIndex;
     private successLabel;
+    private winchHandler;
+    private lastRenderedText;
     constructor(workerCount: number, total: number, tips?: string[], successLabel?: string);
     start(): void;
     update(workerId: number, state: WorkerState): void;
     finish(): void;
     private render;
+    private countVisualLines;
     private formatRow;
     private plainLabel;
 }

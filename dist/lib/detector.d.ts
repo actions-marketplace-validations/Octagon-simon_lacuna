@@ -6,8 +6,16 @@ export interface DetectedEnvironment {
     testFilePattern: string;
     coverageCommand: string;
     testCommand: string;
+    jestTestPathFlag: string;
 }
 export declare function envForRunner(runner: string): DetectedEnvironment;
+export declare function sq(path: string): string;
+export declare function jestPath(path: string): string;
+export declare function multiFileTestCommand(env: DetectedEnvironment, files: string[]): string;
+export declare function scopedCoverageCommand(env: DetectedEnvironment, relDir: string): string | null;
+export declare function relatedCoverageCommand(env: DetectedEnvironment, relFile: string): string | null;
+export declare function scopedTestCommand(env: DetectedEnvironment, relDir: string): string | null;
 export declare function fileTestCommand(env: DetectedEnvironment, testFilePath: string): string;
+export declare function detectJestTestPathFlag(cwd: string): Promise<string>;
 export declare function detectEnvironment(cwd?: string, configRunner?: string): Promise<DetectedEnvironment>;
 //# sourceMappingURL=detector.d.ts.map

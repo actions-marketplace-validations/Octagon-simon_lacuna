@@ -9,6 +9,9 @@ export interface AnalyzeResult {
     gaps: CoverageGap[];
     untouchedCount: number;
     passed: boolean;
+    scope?: string;
+    patchCoveragePct?: number;
+    diffBase?: string;
 }
 export interface ReportInput {
     type: 'analyze' | 'generate';
@@ -31,8 +34,15 @@ export interface JsonReport {
         lines?: number;
         functions?: number;
     };
+    patchCoverage?: {
+        before: number;
+        after: number;
+        base?: string;
+    };
     filesProcessed?: number;
     testsWritten?: number;
+    fixHandoffs?: number;
+    fixHandoffRecovered?: number;
     gaps?: Array<{
         file: string;
         uncoveredFunctions: string[];

@@ -1,134 +1,242 @@
-# lacuna
+<p align="center">
+  <img src="docs/lacuna-logo.png" alt="lacuna" width="96" height="96" />
+</p>
 
-**Agentic test coverage — finds gaps, writes tests, verifies they pass.**
+<h1 align="center">lacuna</h1>
 
-Lacuna is a CLI tool that uses AI to analyze your codebase, identify untested code, generate meaningful tests, run them, and retry if they fail — all in one command.
+> Find untested code, write tests for it, and verify they pass — in one command, or right inside VS Code.
+
+[![npm version](https://img.shields.io/npm/v/lacuna-cli.svg)](https://www.npmjs.com/package/lacuna-cli)
+[![npm downloads](https://img.shields.io/npm/dm/lacuna-cli.svg)](https://www.npmjs.com/package/lacuna-cli)
+[![Release](https://github.com/Octagon-simon/lacuna/actions/workflows/release.yml/badge.svg)](https://github.com/Octagon-simon/lacuna/actions/workflows/release.yml)
+[![Node](https://img.shields.io/node/v/lacuna-cli.svg)](https://nodejs.org)
+[![License: MIT](https://img.shields.io/npm/l/lacuna-cli.svg)](#license)
+
+Lacuna is a command-line tool that reads your code, finds the parts your tests don't cover, and writes tests to fill the gaps. It runs every test it writes and retries the ones that fail, so what lands in your repo actually passes.
+
+It works with any OpenAI-compatible model (including local ones via Ollama or LM Studio), so you can run it without sending code to a hosted provider if you'd rather not.
 
 ```bash
-lacuna generate
+$ lacuna generate
 ```
+
+---
+
+## Getting started
+
+### 1. Install
+
+```bash
+$ npm install -g lacuna-cli
+```
+
+Requires Node 20 or newer.
+
+### 2. Set an API key
+
+Lacuna defaults to DeepSeek. Create a key at [platform.deepseek.com](https://platform.deepseek.com) and export it:
+
+```bash
+$ export DEEPSEEK_API_KEY=sk-...
+```
+
+Prefer a different model? See [Models](#models); every option, including free local ones, is listed there. You can pick one during `lacuna init`.
+
+### 3. Configure your project
+
+From your project root:
+
+```bash
+$ lacuna init
+```
+
+This is an interactive wizard. It detects your test runner, asks which model to use, and writes a `.lacuna.json`. For React, React Native, and Next.js projects it also installs the testing libraries and creates a working test config and setup file.
+
+### 4. See what's untested
+
+```bash
+$ lacuna analyze
+```
+
+Read-only. It runs your suite, collects coverage, and lists the files and functions below your threshold. Nothing is written.
+
+### 5. Generate the tests
+
+```bash
+$ lacuna generate
+```
+
+Lacuna writes tests for the gaps, runs them, and retries failures. When it finishes, the new tests are already passing.
+
+To target a single file and skip the full coverage run:
+
+```bash
+$ lacuna generate --file src/utils/math.ts
+```
+
+That's the whole loop. The rest of this README is reference.
 
 ---
 
 ## How it works
 
 ```
-lacuna analyze / lacuna generate            lacuna fix
-  │                                           │
-  ├── 1. Collect coverage                     ├── 1. Find failing files
-  │     ├── If report is < 10 min old:        │     ├── --file: run that file only (fast)
-  │     │     reuse cached report             │     ├── No --file + cache < 5 min old: use cache
-  │     └── Otherwise: run full suite         │     └── Otherwise: run full suite
-  ├── 2. Find files below threshold           │
-  │                                           └── For each failing test file:
-  └── For each gap: (generate only)                 ├── Runs file alone → captures error output
-        ├── Reads source + existing tests           ├── Reads the test file + its source file
-        ├── Reads imported type definitions         ├── Reads imported type definitions
-        ├── Reads tsconfig paths, deps,             ├── Reads tsconfig paths, deps, setup file
-        │   and test setup file                     ├── Detects network mocking issues
-        ├── Sends full context to AI model          ├── AI reasons in <thinking>, writes fix
-        ├── AI reasons then writes tests            ├── Writes the fixed file
-        ├── Runs the tests                          ├── ✅ Pass → next file
-        ├── ✅ Pass → next file                     └── ❌ Fail → records what failed,
-        └── ❌ Fail → records what failed,                       detects oscillation (stops early),
-                      detects oscillation (stops early),         retries with negative constraints
-                      retries with negative constraints          restores original on final failure
-                      restores original on final failure
+lacuna generate                              lacuna fix
+  │                                            │
+  ├─ 1. Collect coverage                       ├─ 1. Find failing files
+  │    ├─ report < 10 min old → reuse it       │    ├─ --file → that file only
+  │    └─ otherwise → run the suite            │    ├─ cache < 30 min old → reuse it
+  ├─ 2. Find files below threshold             │    └─ otherwise → run the suite
+  │                                            │
+  └─ For each gap:                             └─ For each failing file:
+       ├─ Read source + existing tests              ├─ Run it alone, capture the error
+       ├─ Extract used symbol definitions           ├─ Read the test + source + types
+       │  (return shapes, method signatures)        ├─ Read tsconfig paths, deps, setup
+       ├─ Read tsconfig paths, deps, setup          ├─ Model writes a surgical fix
+       ├─ Send full context to the model            ├─ Pass → next file
+       ├─ Run the generated tests                   └─ Fail → record it, detect loops,
+       ├─ Pass → next file                                   retry, restore on giving up
+       └─ Fail → retry with the error,
+                 keep the best attempt
 ```
+
+Two rules hold throughout: lacuna never leaves a half-written file behind, and it never removes passing tests. If it can't fully fix a file, it keeps the attempt with the most passing tests — and if nothing beat the starting point, it puts the original back.
+
+**Coverage is a guide, not a mandate.** lacuna won't manufacture junk tests to turn a red line green — no type-impossible inputs (`null as any` on a non-nullable prop), no assertions that contradict the test's own title, no tests that lock in an incidental quirk. When you target an already-tested file, the only lines left uncovered are usually defensive/edge branches that aren't meaningfully testable; lacuna leaves those uncovered and tells you so, rather than padding the suite. Each accepted file is then run through your project's own `eslint --fix` + `prettier` so it matches your style.
 
 ---
 
-## Install
+## VS Code extension
 
-```bash
-npm install -g lacuna-cli
-```
+The same agent, embedded directly in your editor — no shelling out to the CLI. Works in VS Code and the Open VSX editors (Cursor, Windsurf, VSCodium).
 
----
+- **Right-click to generate or fix** — right-click a source file → **Generate Tests**, or a failing test → **Fix Failing Tests**. Right-click a **folder** to fill every gap in it, with parallel workers processing files concurrently (not one by one).
+- **Live progress panel** — a legible, append-only log of every phase (generating → running → retrying), streamed tokens, request count, and which learned rules were used. A **Stop** button aborts the in-flight run instantly.
+- **Review before anything is kept** — every generated/fixed file opens in a diff you accept or reject. The shared **mocks file** is always reviewed separately — a run never silently rewrites what the whole suite imports.
+- **Coverage Gaps sidebar** — every file below threshold or with no test, one click to generate; uncovered lines are painted in the editor gutter.
+- **Memory sidebar** — browse the confidence-weighted learned rules, sort by confidence/hit count, and flag one that stops helping.
+- **Secure keys** — your API key lives in the OS keychain (VS Code SecretStorage), never in `.lacuna.json`. Every run is confirmed and metered up front; an opt-in **Auto Mode** (per workspace) skips the per-run prompt while still guarding mocks-file and environment changes.
 
-## Quick start
+**Getting started in the editor:**
 
-```bash
-lacuna --version   # or -V
-lacuna --help      # or -h
+1. Install **Lacuna** from the Marketplace (or the `.vsix`).
+2. Run **Lacuna: Set Up** to create `.lacuna.json`, then **Lacuna: Set API Key**.
+3. Right-click a source file or folder → **Generate Tests**, watch the panel, accept the diff.
 
-cd your-project
-lacuna init        # interactive setup wizard — installs test runner if missing
-lacuna analyze     # see what's uncovered (read-only)
-lacuna generate    # AI fills the gaps
-```
+It reads the same `.lacuna.json` and uses the same models as the CLI. A few editor-only preferences live under `lacuna.*` in VS Code settings (`lacuna.workers`, `lacuna.alwaysVerbose`, `lacuna.confirmBeforeRun`). The extension source lives in [`extension/`](extension/) — see [`extension/PUBLISHING.md`](extension/PUBLISHING.md) to build or publish it.
 
 ---
 
 ## Commands
 
 ### `lacuna init`
-Interactive setup wizard. Configures your model, test runner, source directory, coverage threshold, and mock file. Creates `.lacuna.json` in your project root.
 
-Works from any subdirectory — lacuna finds the project root automatically.
+Sets up lacuna in your project. Detects the test runner, picks a model, and writes `.lacuna.json`. Run it from anywhere in the project; it finds the root on its own.
 
-For **React and Next.js** projects, `lacuna init` also:
-- Installs `@testing-library/react`, `@testing-library/jest-dom`, `@testing-library/user-event`, and `jsdom`
-- Creates `vitest.config.ts` with the correct `environment: 'jsdom'` and `@/` alias (read from your `tsconfig.json`)
-- Creates a setup file pre-loaded with global `vi.mock()` calls for `next/navigation`, `next/headers`, and `next/cache` so individual tests don't need to mock them
+For React, it installs `@testing-library/react`, `jest-dom`, `user-event`, and `jsdom`, then writes a `vitest.config.ts` and setup file with mock cleanup hooks.
 
-```bash
-lacuna init
-```
+For Next.js it does the same but skips the `jsdom` environment (Next manages its own), adds your `@/` alias, and pre-mocks `next/navigation`, `next/headers`, `next/cache`, `next/image`, and `next/font`.
 
 ### `lacuna analyze`
-Runs your test suite, collects coverage, and prints which files and functions are below threshold. **Does not write any files.**
+
+Runs the suite, collects coverage, and reports what's below threshold. Writes nothing.
 
 ```bash
 lacuna analyze
+lacuna analyze @diff:origin/main    # patch coverage of the lines your branch changed
+lacuna analyze @diff packages/api   # ...scoped to one directory (monorepo package)
 lacuna analyze --threshold 90
 lacuna analyze --format json --output report.json
 lacuna analyze --format markdown
 ```
 
 ### `lacuna generate`
-The main command. Runs the full agent loop — analyzes gaps, writes tests, runs them, retries failures.
 
-When `--file` is given, lacuna skips the coverage suite entirely and goes straight to the AI — no waiting for a full suite run. The generated tests are verified by running just that file. Use this to increase coverage on a specific file without touching the rest of the project.
-
-If you ran `lacuna analyze` recently (within 10 minutes), `generate` will reuse the existing coverage report instead of running the suite again. Use `--fresh` to force a new run.
-
-If all retries fail, the original test file is restored — your workspace is never left with a half-written file. If the model oscillates (produces the same code twice), the retry loop stops early rather than burning remaining iterations.
-
-If a fix attempt breaks an import and causes the test runner to collect 0 tests, lacuna detects this and sends the model the original error alongside an explicit warning — so it knows it over-reached and what it was actually supposed to fix. The same applies if a fix reduces the number of passing tests: the model is told it caused a regression and shown what the baseline was.
+The main command: find gaps, write tests, run them, retry failures.
 
 ```bash
 lacuna generate
-lacuna generate --file src/utils/math.ts   # target one file
-lacuna generate --dry-run                  # preview without writing
-lacuna generate --verbose                  # live code panel as model writes each file
-lacuna generate --workers 4                # run 4 files in parallel
-lacuna generate --fresh                    # force a new coverage run
+lacuna generate --file src/utils/math.ts   # one file, skips the coverage run
+lacuna generate @diff:origin/main           # patch coverage: only the lines your branch changed
+lacuna generate --dry-run                   # preview, write nothing
+lacuna generate --verbose                   # live panel as the model writes
+lacuna generate --workers 4                  # process 4 files in parallel
+lacuna generate --fresh                      # ignore the cached coverage report
+lacuna generate --no-fix-on-failure          # don't hand exhausted files to the fix specialist
 lacuna generate --format json --output report.json
 ```
 
+If you ran `analyze` in the last 10 minutes, `generate` reuses that report instead of running the suite again (`--fresh` forces a new run). If the model produces the same output twice, the loop stops early instead of wasting iterations.
+
+**When generate's own retries are exhausted, it hands the best attempt to the fix specialist before giving up** (default on — `--no-fix-on-failure` to disable). `lacuna fix`'s prompt carries a fuller set of mock-shape/hook/service hints than generate's own retry prompt does, so a file that's merely hard — not impossible — can pass under the fix specialist even after generate's own attempts ran out, with no separate manual `lacuna fix` pass required. It's a second opinion, not an independent attempt, so it gets half of your configured `maxIterations` (minimum 1) rather than a full fresh budget. Under `--workers N` this interleaves with other files' generation instead of running as a later serial pass. If the fix specialist also can't land it, lacuna keeps whichever attempt collected the most passing tests (never worse than what generate handed off) and tells you to run `lacuna fix --file` yourself.
+
+#### Patch coverage (`@diff`) — close a Codecov gap on a PR
+
+Codecov (and similar gates) judge **patch coverage**: the coverage of only the lines your PR *changed*, not the whole repo. A file can sit at 94% overall and still fail the gate because the four lines you just added aren't tested. `lacuna generate @diff` targets exactly that scope — the same lines Codecov flags — so a green lacuna run predicts a green patch check.
+
+```bash
+lacuna generate @diff                       # diff vs the repo's default branch (origin/HEAD → main/master)
+lacuna generate @diff:origin/main           # explicit base ref
+lacuna generate @diff packages/api          # narrow to the changed lines inside ONE directory (monorepo package)
+lacuna generate @diff -f src/lib/Service.ts # narrow to ONE changed file's uncovered lines
+lacuna analyze  @diff:origin/main           # read-only: report patch coverage + the gap, write nothing
+```
+
+**The workflow (fast + accurate):**
+
+```bash
+# 1. Produce a FULL coverage report once (or reuse the lcov your CI already uploaded to Codecov).
+npm run test:cov                       # writes coverage/lcov.info
+
+# 2. Generate tests for just the changed-and-uncovered lines. lacuna reuses the report from step 1
+#    instantly — no suite re-run — and writes tests scoped to the exact gap.
+lacuna generate @diff:origin/main
+
+# 3. Commit.
+git add -A && git commit -m "test: cover patch"
+```
+
+Why step 1 matters: patch coverage is only meaningful against the **same measurement Codecov used** — your whole suite. A line can be covered by a test in a *different* file (an integration or DI test), so lacuna must read a full-suite report to know what's genuinely uncovered. It therefore **reuses an existing `coverage/lcov.info` regardless of age** rather than running a narrower, misleading subset. If none exists it runs the full suite (accurate but slow) and warns you; `--fresh` forces a full re-run. The after-number is measured cheaply — just the new test's incremental coverage, unioned onto the report, no second full run.
+
+**In CI** — gate the PR on patch coverage without waiting on Codecov's round-trip:
+
+```yaml
+- run: npm run test:cov                        # your normal coverage step; leaves coverage/lcov.info
+- run: npx lacuna generate @diff:origin/main   # reads that lcov, covers the gap; exit 1 if still below threshold
+- run: git diff --exit-code || (git add -A && git commit -m "test: cover patch" && git push)
+```
+
+**How it decides what to target:** it diffs from the `git merge-base` with the base ref (exactly Codecov's patch semantics — only what your branch added since it forked), intersects those changed lines with the uncovered lines in the coverage report, and generates tests for just that intersection. The report gains a `Patch coverage` before/after line and the exit code gates on it (below threshold → `1`).
+
+**Edge cases:** a docs-only diff exits `0` ("nothing to cover"); an unresolvable base (e.g. a shallow CI clone) exits `2` with a `git fetch --unshallow` hint; a changed file whose tests never ran counts as fully uncovered. Note: lacuna currently parses line coverage (`DA`) but not branch coverage (`BRDA`), so a half-covered conditional Codecov shows as a yellow `n/m` branch isn't targeted yet — full line misses are.
+
 ### `lacuna fix`
-Finds all failing tests and repairs them using AI — without rewriting them from scratch. Sends each failing file along with its error output and source code to the model, which surgically fixes what's broken and retries until it passes.
+
+Finds failing tests and repairs them. Each failing file goes to the model with its error output and source; the model patches what's broken and lacuna reruns until it passes. A fix that makes the tests pass is kept even if minor type warnings remain. `fix` never reverts a working change — and when it can't reach all-green, it keeps the attempt with the most passing tests rather than discarding a partial improvement.
 
 ```bash
 lacuna fix
-lacuna fix --workers 4                     # fix 4 files in parallel
-lacuna fix --file src/utils/math.test.ts   # fix a single test file (skips full suite run)
-lacuna fix --dry-run                       # preview fixes without writing
-lacuna fix --verbose                       # live code panel as model writes each fix
-lacuna fix --fresh                         # re-run the suite even if cache is recent
+lacuna fix --file src/utils/math.test.ts    # one file, skips the full suite
+lacuna fix --workers 4                       # 4 files in parallel
+lacuna fix --types                           # repair files that pass but fail type-checking
+lacuna fix --dry-run
+lacuna fix --verbose
+lacuna fix --fresh
+lacuna fix --no-regenerate-on-failure        # don't fall back to regenerating
+lacuna fix --fix-polluters                   # handle tests that pass alone but fail in the suite
 ```
 
-Unlike `lacuna generate`, which creates new tests, `lacuna fix` operates on existing failing tests. It preserves all test logic and only changes what is necessary to make the suite pass.
+A few behaviors worth knowing:
 
-If all retries fail or the model oscillates (identical output detected), the original file is restored automatically. Your test suite is always left in a coherent state.
+- **Regeneration fallback (on by default).** If repair is exhausted on a *genuinely broken* file (one with no passing tests to lose), lacuna deletes it and regenerates from source, since a clean start beats more patching. A file that already has passing tests is never deleted, and a regeneration that would lower the passing count is discarded. The rewrite gets half of your configured `maxIterations` (minimum 1), not a full fresh budget — it's a second opinion after repair already spent its whole allowance, not an independent attempt. Turn it off with `--no-regenerate-on-failure`.
+- **Type errors (`--types`).** Selects files by TypeScript errors instead of test failures, finding every test file that fails type-checking even if its tests pass. Type-checking runs against each file's **governing `tsconfig`** (the nearest one walking up), not the repo root — so in a monorepo a package's `@/` path aliases, `jsx`, and `moduleResolution` resolve correctly and a clean file isn't flagged with false `Cannot find module`/`Cannot use JSX` errors. It also respects that config's rules: if the nearest one disables `noImplicitAny` (common in monorepo packages), implicit-`any` isn't treated as an error. Files are grouped by config and checked one scoped `tsc` run per package.
+- **Polluters (`--fix-polluters`).** For tests that pass alone but fail in the full suite, lacuna bisects the suite to find the file leaking state and fixes it; if none can be isolated, it regenerates the affected test.
 
-If a fix attempt breaks an import (causing 0 tests to be collected) or reduces the number of passing tests, lacuna detects the regression and tells the model exactly what the original failure was — so it doesn't waste further iterations trying to recover from the wrong problem.
-
-When `--file` is given, lacuna skips the full suite and runs only the target file — much faster for iterating on a single broken test. Without `--file`, the failing-files list is cached for 30 minutes. After a fix run, the cache is updated to contain only the files that are still failing — so re-running `lacuna fix` immediately picks up exactly where the last run left off. Once all files are fixed, the cache is cleared so the next run does a clean suite scan.
+Without `--file`, the failing-files list is cached for 30 minutes and trimmed to whatever's still failing after each run, so re-running picks up where you left off.
 
 ### `lacuna run`
-Runs your test suite and reports coverage. No AI involved.
+
+Runs your suite and reports coverage. No model involved.
 
 ```bash
 lacuna run
@@ -136,22 +244,30 @@ lacuna run
 
 ---
 
-## Configuration — `.lacuna.json`
+## Configuration
 
-Created by `lacuna init`. All fields are optional with sensible defaults.
+`lacuna init` writes `.lacuna.json`. Every field is optional and has a sensible default.
+
+The file includes a `$schema` line, so editors like VS Code give you key completion and inline docs as you type. To add it to an existing config, put this first:
 
 ```json
 {
+  "$schema": "https://raw.githubusercontent.com/Octagon-simon/lacuna/main/lacuna.schema.json"
+}
+```
+
+A typical config:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/Octagon-simon/lacuna/main/lacuna.schema.json",
   "provider": "openai-compatible",
   "model": "deepseek-chat",
   "baseURL": "https://api.deepseek.com/v1",
   "apiKeyEnv": "DEEPSEEK_API_KEY",
   "testRunner": "jest",
-  "coverageFormat": "lcov",
-  "coverageDir": "coverage",
   "sourceDir": "src",
   "threshold": 80,
-  "maxIterations": 3,
   "mocksFile": "src/test/mocks.ts",
   "setupFile": "src/test/setup.ts",
   "ignore": ["src/graphql/", "src/theme/"]
@@ -163,109 +279,103 @@ Created by `lacuna init`. All fields are optional with sensible defaults.
 | `provider` | `openai-compatible` | `anthropic` or `openai-compatible` |
 | `model` | `deepseek-chat` | Model name |
 | `apiKeyEnv` | `DEEPSEEK_API_KEY` | Env var holding your API key |
-| `baseURL` | `https://api.deepseek.com/v1` | API base URL — required for `openai-compatible` provider |
-| `testRunner` | auto-detect | `jest` \| `vitest` \| `pytest` \| `mocha` \| `go-test` |
-| `coverageFormat` | `lcov` | `lcov` \| `json-summary` |
-| `coverageDir` | `coverage` | Where your test runner writes coverage |
-| `sourceDir` | `src` | Root directory of source files — set during `lacuna init` |
+| `baseURL` | `https://api.deepseek.com/v1` | API base URL (required for `openai-compatible`) |
+| `testRunner` | auto | `jest`, `vitest`, `pytest`, `mocha`, `go-test`, and more |
+| `coverageFormat` | `lcov` | `lcov`, `json-summary`, or `cobertura` |
+| `coverageDir` | `coverage` | Where your runner writes coverage |
+| `sourceDir` | `src` | Directory to scan. A string, or an array like `["src", "lib"]` |
 | `threshold` | `80` | Minimum line coverage % to pass |
-| `maxIterations` | `3` | How many times to retry a failing generated test |
-| `coverageTimeout` | `300` | Seconds before the test suite is killed (prevents hanging on open handles) |
-| `mocksFile` | — | Path to shared mock file (see Enterprise Mocks below) |
-| `setupFile` | — | Path to your test setup file — lacuna passes its contents to the AI so it knows which globals and matchers are already available |
-| `ignore` | `[]` | Extra path substrings to exclude from gap detection (e.g. `"src/graphql/"`) |
-| `maxTokens` | `16000` | Maximum output tokens per model call. Lower this for providers with strict limits (Groq free tier: ~8000, Ollama: depends on model). Raise it if large test files are being cut off mid-generation. |
+| `maxIterations` | `3` | Retries per failing test before giving up |
+| `coverageTimeout` | `300` | Seconds before the suite is killed (guards against hung handles) |
+| `mocksFile` | (none) | Shared mock file every generated test imports from (see [Shared mocks](#shared-mocks)) |
+| `setupFile` | (none) | Your test setup file; its contents are shown to the model so it knows what's already available |
+| `ignore` | `[]` | Path substrings to skip, e.g. `"src/graphql/"` |
+| `maxTokens` | `16000` | Max output tokens per call. Lower for strict providers (Groq free tier ~8000); raise if large files are cut off |
+| `format` | `true` | Run your project's local `eslint --fix` + `prettier` on each generated/fixed test so it matches your repo style and clears lint. Best-effort; set `false` to disable |
+| `nodeEnvRouting` | `true` | When a generated test is DOM-free (services, utils, validators), add a `@vitest-environment node` / `@jest-environment node` docblock so it skips jsdom startup and runs much faster. Verified per file and reverted if it breaks the test; set `false` to disable |
+| `debug` | `false` | Log every prompt and response (see [Debugging](#debugging)) |
 
 ---
 
-## Supported models
+## Models
 
-Lacuna works with any AI model — local or cloud.
+Lacuna works with any model behind an OpenAI-compatible API, plus Anthropic directly. Switch any time by re-running `lacuna init` or editing `.lacuna.json`.
 
-| Preset | Model | API key env | Notes |
+| Preset | Model | API key | Notes |
 |---|---|---|---|
-| **DeepSeek (default)** | `deepseek-chat` | `DEEPSEEK_API_KEY` | Best value — fast, cheap, no rate-limit issues |
+| **DeepSeek** (default) | `deepseek-chat` | `DEEPSEEK_API_KEY` | Fast and cheap; a good default |
 | DeepSeek R1 | `deepseek-reasoner` | `DEEPSEEK_API_KEY` | Reasoning model |
 | Claude Sonnet | `claude-sonnet-4-6` | `ANTHROPIC_API_KEY` | High quality |
 | Claude Opus | `claude-opus-4-7` | `ANTHROPIC_API_KEY` | Most capable |
-| DeepSeek R1 | `deepseek-reasoner` | `DEEPSEEK_API_KEY` | Reasoning model |
 | GPT-4o | `gpt-4o` | `OPENAI_API_KEY` | |
 | Groq | `llama-3.3-70b-versatile` | `GROQ_API_KEY` | Fast, free tier |
-| Gemini 2.5 Pro | `gemini-2.5-pro` | `GEMINI_API_KEY` | Google's most capable |
-| Gemini 2.5 Flash | `gemini-2.5-flash` | `GEMINI_API_KEY` | Fast & cheap |
-| OpenRouter | any model | `OPENROUTER_API_KEY` | 100+ models, one key |
-| Ollama | any local model | none | Fully local, free |
-| LM Studio | any local model | none | Fully local, free |
-| Custom | configurable | configurable | Any OpenAI-compatible API |
-
-Switch models any time by re-running `lacuna init` or editing `.lacuna.json` directly.
+| Gemini 2.5 Pro | `gemini-2.5-pro` | `GEMINI_API_KEY` | |
+| Gemini 2.5 Flash | `gemini-2.5-flash` | `GEMINI_API_KEY` | Faster, cheaper |
+| OpenRouter | any | `OPENROUTER_API_KEY` | One key, many models |
+| Ollama | any local | none | Runs fully on your machine |
+| LM Studio | any local | none | Runs fully on your machine |
+| Custom | any | configurable | Any OpenAI-compatible endpoint |
 
 ---
 
-## Enterprise mocks
+## Supported stacks
 
-For large codebases, ad-hoc mocks in every test file create maintenance nightmares. Lacuna supports a **shared mock file** — a single source of truth for all mocks that every generated test imports from.
+Lacuna can run the suite and collect coverage for a wide range of languages. The quality of the *generated* tests depends on how much prompt tuning a stack has had.
 
-### Setup
+**Tuned and tested:**
 
-1. Create `src/test/mocks.ts`:
+| Stack | Runner | Focus |
+|---|---|---|
+| TypeScript / JavaScript | Vitest, Jest | Hook return shapes, service method signatures, type-safe mocks, `vi.mocked()`/`jest.mocked()`, factory hoisting |
+| React | Vitest, Jest | RTL queries, `act()` async rules, loading states, mock lifecycle, `findBy` over `waitFor` |
+| React Native / Expo | Jest (`jest-expo`) | RNTL v14 async contract, infra mocks (Reanimated, AsyncStorage, vector icons), mock-shape accuracy, query isolation |
+| Next.js | Vitest | Server/client boundaries, `next/navigation`, `next/headers`, `next/cache`, server actions, directive detection |
+
+**Runner support, lighter tuning:** Vue (Vitest), Python (pytest), PHP (PHPUnit, Pest). These run and collect coverage, but framework-specific prompt tuning is still in progress.
+
+**Runner only:** Go, Ruby (RSpec), Rust (cargo), C# (dotnet), Java (Gradle/Maven), Swift. Suites run and coverage is collected, but test generation isn't tuned for them yet.
+
+---
+
+## Shared mocks
+
+In a large codebase, redefining the same mocks in every test file gets painful fast. Point lacuna at a single mock file and every generated test imports from it.
+
+Create the file:
 
 ```ts
+// src/test/mocks.ts
 import { vi } from 'vitest'
 
-// API clients
-export const mockAxios = {
-  get: vi.fn(),
-  post: vi.fn(),
-  put: vi.fn(),
-  delete: vi.fn(),
-}
-
-// Router
 export const mockNavigate = vi.fn()
-export const mockUseNavigate = () => mockNavigate
 vi.mock('react-router-dom', () => ({
-  useNavigate: mockUseNavigate,
+  useNavigate: () => mockNavigate,
   useParams: vi.fn(() => ({})),
 }))
 
-// Auth
-export const mockUser = {
-  id: 'user-1',
-  email: 'test@example.com',
-  role: 'admin',
-}
+export const mockUser = { id: 'user-1', email: 'test@example.com', role: 'admin' }
 export const mockUseAuth = vi.fn(() => ({ user: mockUser, isLoading: false }))
 
-// Reset all mocks between tests
-beforeEach(() => {
-  vi.clearAllMocks()
-})
+beforeEach(() => vi.clearAllMocks())
 ```
 
-2. Add `mocksFile` to `.lacuna.json`:
+Reference it in `.lacuna.json`:
 
 ```json
-{
-  "mocksFile": "src/test/mocks.ts"
-}
+{ "mocksFile": "src/test/mocks.ts" }
 ```
 
-3. Run lacuna normally:
+Now generated tests import from that file instead of inventing their own mocks. If a test needs a mock that doesn't exist yet, lacuna adds it to the shared file and imports it.
 
-```bash
-lacuna generate
-```
-
-Every generated test will import from `src/test/mocks.ts` instead of creating its own `vi.fn()` calls. If a test needs a mock that doesn't exist yet, Claude will add it to the mocks file and import it — keeping everything centralized.
+Under the hood, lacuna parses the mock file before each run and builds an inventory of every `vi.mock()` call and its exports, so the model knows what's already mocked and edits it surgically instead of duplicating it. When a mock needs changing, the model patches the existing block rather than rewriting the file.
 
 ---
 
 ## CI / GitHub Actions
 
-Add lacuna to your PR workflow to automatically generate tests and block merges below threshold.
+Run lacuna on pull requests to generate missing tests and block merges below threshold.
 
-Create `.github/workflows/lacuna.yml`:
+`.github/workflows/lacuna.yml`:
 
 ```yaml
 name: lacuna coverage
@@ -280,7 +390,6 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -296,141 +405,111 @@ jobs:
       - name: Run lacuna
         id: lacuna
         uses: Octagon-simon/lacuna@v1
-        continue-on-error: true         # allow commit step to run even if coverage is below threshold
+        continue-on-error: true        # let the commit step run even if coverage is low
         with:
           threshold: 80
-          workers: 2                    # parallel workers — increase for larger repos
-          model: deepseek               # default — cost-effective, no rate-limit issues
+          workers: 2
+          model: deepseek
           deepseek-api-key: ${{ secrets.DEEPSEEK_API_KEY }}
 
-      # Runs even when lacuna exits with code 1 (below threshold) so generated
-      # tests are never lost. Skips the commit if nothing was written.
       - name: Commit generated tests
         if: steps.lacuna.outcome != 'cancelled'
         run: |
           git config user.name "lacuna[bot]"
           git config user.email "lacuna[bot]@users.noreply.github.com"
           git add -A
-          git diff --staged --quiet || git commit -m "chore: lacuna — add generated tests"
+          git diff --staged --quiet || git commit -m "chore: add lacuna-generated tests"
           git push
 ```
 
-On every PR lacuna will:
-- Generate missing tests
-- Post a coverage report as a PR comment (updated on each push, no spam)
-- Block the merge if coverage stays below your threshold
+On each PR, lacuna generates the missing tests, posts a coverage report as a comment (updated in place, not re-posted), and fails the check if coverage stays below threshold.
 
-### Switching models
-
-Pass any lacuna model preset or full model name via the `model` input, along with the matching API key:
+To use a different model, pass its preset and key:
 
 ```yaml
-# GPT-4o
 with:
   model: gpt-4o
   openai-api-key: ${{ secrets.OPENAI_API_KEY }}
-
-# Gemini 2.5 Pro
-with:
-  model: gemini
-  gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
-
-# DeepSeek (cost-effective)
-with:
-  model: deepseek
-  deepseek-api-key: ${{ secrets.DEEPSEEK_API_KEY }}
-
-# Groq (free tier available)
-with:
-  model: groq
-  groq-api-key: ${{ secrets.GROQ_API_KEY }}
 ```
+
+### Gating on Codecov patch coverage
+
+The workflow above covers the whole repo to a threshold. If your gate is a **Codecov patch check** (coverage of only the lines the PR changed), use `@diff` instead — it targets exactly those lines and is far cheaper because it reuses the coverage report your test step already produced. See [Patch coverage (`@diff`)](#patch-coverage-diff--close-a-codecov-gap-on-a-pr) for the full workflow. Minimal step, after your coverage step has written `coverage/lcov.info`:
+
+```yaml
+      - run: npm run test:cov                        # your coverage step → coverage/lcov.info
+      - run: npx lacuna generate @diff:origin/main   # cover the changed-and-uncovered lines
+      - run: |
+          git add -A
+          git diff --staged --quiet || (git commit -m "test: cover patch" && git push)
+```
+
+Fetch enough history for the merge-base first (`actions/checkout` with `fetch-depth: 0`, or `git fetch --unshallow`), otherwise `@diff` can't resolve the base ref and exits `2`.
 
 ---
 
-## Output formats
+## Debugging
 
-All commands support `--format` and `--output`:
+When a run behaves oddly (bad mock shapes, patches that won't apply, failures you can't reproduce), turn on debug logging to see exactly what the model received and returned.
+
+Per run:
 
 ```bash
-# Terminal (default)
-lacuna analyze
+LACUNA_DEBUG=1 lacuna generate --file src/payments/processor.ts
+```
 
-# JSON — for scripts and CI pipelines
-lacuna analyze --format json
-lacuna generate --format json --output lacuna-report.json
+Or persist it in `.lacuna.json`:
 
-# Markdown — for PR comments and docs
-lacuna analyze --format markdown
+```json
+{ "debug": true }
+```
+
+Lacuna writes one log per target file, named after its path: `src/queue/processor.ts` becomes `lacuna-debug.src_queue_processor.txt` (a file's `generate` and `fix` share the log). The full path is used, not just the file name, so identically-named files like `send-email/route.ts` and `login/route.ts` get separate logs instead of overwriting each other. Each log is cleared when that file's run starts and appended through its retries, so parallel runs never clobber each other. The env var wins over the config value, so you can override per run without editing anything.
+
+Filing a bug? Attach the debug file; it has the exact prompt and raw response, which is what makes an issue reproducible.
+
+**Jest-specific diagnostics.** Two failure modes are common enough on real Jest projects that lacuna detects and names them directly instead of showing a generic error:
+
+- **Config conflict** — if a project has both a `jest.config.js`/`.ts` *and* a `"jest"` key in `package.json`, Jest refuses to run at all ("Multiple configurations found") and exits before a single test runs. lacuna surfaces this by name (naming both conflicting sources) instead of the misleading "coverage isn't configured" message you'd otherwise see — the coverage config is often fine, Jest just never got to use it. Fix: delete or merge one of the two sources.
+- **Any other fatal Jest crash before tests run** (a missing/moved preset, a malformed config, etc.) — Jest wraps all of these in the same generic "Validation Error" envelope. Rather than guessing "check your coverage config" for every possible crash shape, lacuna recognizes the envelope and shows Jest's own error verbatim, so you see the real fix (e.g. "install `@react-native/jest-preset`") instead of an unrelated coverage hint.
+- **Leaked handle** — a test can pass while still leaking a real async handle (a `setInterval`/open connection a module starts on import and never clears), which is invisible to pass/fail results. lacuna passes `--forceExit` on every Jest invocation it runs (so a leak can't silently hang lacuna itself for the full run timeout) and watches for Jest's own "Force exiting Jest" warning; on a hit it nudges the model once to add cleanup, then keeps the passing file and warns rather than looping forever on it.
+
+---
+
+## Reference
+
+### Output formats
+
+Every command takes `--format` and `--output`:
+
+```bash
+lacuna analyze                                   # terminal (default)
+lacuna analyze --format json                     # for scripts and CI
+lacuna analyze --format markdown                 # for PR comments
+lacuna generate --format json --output report.json
 ```
 
 ### Exit codes
 
 | Code | Meaning |
 |---|---|
-| `0` | Pass — coverage meets threshold |
-| `1` | Fail — coverage below threshold or some files could not be tested |
-| `2` | Error — test runner failed, config issue, or zero tests generated |
+| `0` | Coverage meets threshold |
+| `1` | Coverage below threshold, or some files couldn't be tested |
+| `2` | Error: runner failed, bad config, or no tests generated |
 
----
+### Test placement
 
-## Contextual tips
+Lacuna follows your existing layout. If tests sit next to source files, new tests go there too. If they live in a separate tree (`test/`, `tests/`, `test/unit/`, …) that actually contains tests, it mirrors that. Otherwise it uses a `__tests__/` folder beside the source, creating it if needed.
 
-While tests are generating, lacuna shows rotating tips in the terminal — hints about flags and config options you might not be using yet. Tips are context-aware: if you're already using a flag, its tip won't appear.
+### What gets skipped
 
-**Tips shown during `lacuna generate`:**
-- Use `-w 4` (`--workers`) to process multiple files in parallel
-- Use `-f src/utils/math.ts` (`--file`) to target a single file
-- Use `--dry-run` to preview without writing files
-- Use `-v` (`--verbose`) to watch a live code panel as the AI writes each test file
-- Use `-m claude-opus-4-7` (`--model`) to switch to a more capable model
-- Use `--fresh` to force a new coverage run instead of reusing a cached report
-- Use `-t 90` (`--threshold`) to raise the coverage bar
-- Use `--format json --output report.json` to export results
-- Set `mocksFile` in `.lacuna.json` to share mocks across all generated tests
-- Add paths to `ignore[]` in `.lacuna.json` to skip directories
-- Run `lacuna fix` to repair failing tests
-- Run `lacuna analyze` to inspect gaps without writing files
-- Increase `coverageTimeout` in `.lacuna.json` if your suite is being killed
-- Set `maxTokens` in `.lacuna.json` if tests are cut off mid-generation (lower for Groq/Ollama, raise for large files)
+Files with no testable logic are skipped automatically:
 
-**Tips shown during `lacuna fix`** are the same, minus flags that `fix` doesn't support (`--threshold`, `--format`).
+- **By directory:** `types/`, `constants/`, `assets/`, `images/`, `icons/`, `fonts/`, `styles/`, `generated/`, `__generated__/`, `mocks/`, `fixtures/`, `migrations/`, `i18n/`, `locales/`, `translations/`
+- **By filename:** `*.d.ts`, `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.mock.*`, `*.types.ts`, `*.constants.ts`, `*.enum.*`, `index.*`
+- **By content:** any file that exports only types, interfaces, enums, or constants
 
-In parallel mode (`--workers`), tips rotate every ~5 seconds in the live worker display. In single-worker mode, a different tip appears before each file is processed.
-
----
-
-## What gets skipped
-
-Lacuna automatically skips files that have no testable runtime logic — no point generating tests for them.
-
-**Skipped by directory name** (anywhere in the path):
-`types/`, `constants/`, `assets/`, `images/`, `icons/`, `fonts/`, `styles/`, `generated/`, `__generated__/`, `mocks/`, `fixtures/`, `migrations/`, `i18n/`, `locales/`, `translations/`
-
-**Skipped by file name pattern:**
-`*.d.ts`, `*.test.*`, `*.spec.*`, `*.stories.*`, `*.config.*`, `*.mock.*`, `*.types.ts`, `*.constants.ts`, `*.enum.*`, `index.*`
-
-**Skipped by content:** Even if a file doesn't match the patterns above, lacuna reads it and skips it if it contains no functions, arrow functions, or classes — i.e. only type/interface/enum/constant exports.
-
-**Add your own exclusions** via `.lacuna.json`:
-
-```json
-{
-  "ignore": ["src/graphql/", "src/theme/", "src/generated/"]
-}
-```
-
-`ignore` entries are matched as path substrings — any file whose path contains the string is excluded.
-
----
-
-## Test placement
-
-Lacuna follows your project's existing conventions:
-
-- If test files exist **next to source files** (co-located), new tests go there too
-- Otherwise, tests go in `__tests__/` inside the same directory as the source file
-- `__tests__/` is created automatically if it doesn't exist
+Add your own with `ignore` in `.lacuna.json`. Entries match as path substrings.
 
 ---
 
@@ -439,54 +518,45 @@ Lacuna follows your project's existing conventions:
 ```
 lacuna/
 ├── src/
-│   ├── commands/          # CLI commands (analyze, generate, fix, run, init)
-│   ├── agent/             # AI agent loop
-│   │   ├── loop.ts        # main generate → run → retry loop
-│   │   ├── fix-loop.ts    # fix → run → retry loop for failing tests
-│   │   ├── context.ts     # builds context for the AI (source + tests + mocks + type definitions)
-│   │   ├── generator.ts   # calls the AI model, manages conversation history
-│   │   └── prompts.ts     # system prompt + user prompt templates
+│   ├── index.ts           # library barrel — the embed surface (used by the extension)
+│   ├── commands/          # CLI commands: analyze, generate, fix, run, init
+│   ├── agent/
+│   │   ├── loop.ts        # generate → run → retry loop (onStatus/onEvent/cancel hooks)
+│   │   ├── fix-loop.ts    # fix → run → retry loop
+│   │   ├── context.ts     # builds model context (source, tests, mocks, types)
+│   │   ├── generator.ts   # calls the model, manages conversation history
+│   │   └── prompts/       # prompt builders, split by framework and runner
 │   ├── lib/
-│   │   ├── config.ts      # cosmiconfig loader + zod schema
-│   │   ├── detector.ts    # auto-detects test runner and language
+│   │   ├── config.ts      # config loader + zod schema
+│   │   ├── events.ts      # structured event stream (memory-used) for embedders
+│   │   ├── detector.ts    # detects test runner and language
 │   │   ├── runner.ts      # spawns test commands, captures output
-│   │   ├── reporter.ts    # terminal / JSON / markdown reporters
-│   │   ├── skeleton.ts    # collapses already-covered function bodies to reduce prompt size
-│   │   ├── extract-error.ts  # strips passing-test noise from runner output before retry
-│   │   ├── validate.ts    # checks generated code has real test calls; detects regressions and broken imports in retry output
-│   │   ├── streaming-viewer.ts  # live bordered code panel for --verbose mode (typewriter effect)
-│   │   ├── typecheck.ts   # post-vitest tsc pass; retries if type errors found
-│   │   ├── providers/     # AI provider abstraction
-│   │   │   ├── anthropic.ts
-│   │   │   ├── openai-compatible.ts
-│   │   │   └── types.ts   # ModelProvider interface + presets
-│   │   └── coverage/
-│   │       ├── lcov.ts    # LCOV parser
-│   │       ├── json.ts    # JSON summary parser
-│   │       ├── gaps.ts    # gap extractor
-│   │       └── types.ts   # shared coverage types
-│   └── ci/
-│       ├── comment.ts     # posts coverage report as GitHub PR comment
-│       └── parse-outputs.ts  # sets GitHub Actions step outputs
-├── app/                   # SaaS dashboard (Next.js + Postgres + Payaza)
+│   │   ├── reporter.ts    # terminal / JSON / markdown output
+│   │   ├── validate.ts    # patch application, regression + broken-import detection
+│   │   ├── typecheck.ts   # tsc pass and type-error scoping
+│   │   ├── providers/     # model provider abstraction (anthropic, openai-compatible)
+│   │   └── coverage/      # lcov / json parsers, gap extraction
+│   └── ci/                # PR comment + GitHub Actions outputs
+├── extension/             # VS Code / Open VSX extension (embeds the core — see PUBLISHING.md)
 ├── action.yml             # GitHub Action definition
-└── .github/workflows/
-    └── example.yml        # example CI workflow to copy into your repo
+└── .github/workflows/     # example workflow + release pipeline
 ```
 
 ---
 
 ## Contributing
 
-Issues and PRs welcome. The codebase is TypeScript throughout.
+Issues and PRs are welcome. The codebase is TypeScript throughout.
 
 ```bash
 git clone https://github.com/Octagon-simon/lacuna
 cd lacuna
 npm install
 npm run build
-npm link          # makes `lacuna` available globally from your local build
+npm link        # makes `lacuna` point at your local build
 ```
+
+When reporting a bug, the bug-report template asks for your test runner, model, lacuna version, and terminal output, the things needed to reproduce it.
 
 ---
 

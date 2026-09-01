@@ -8,3 +8,9 @@ oclif.manifest.json
 
 ## hide the dashboard
 /app/
+
+## local-only dev/release notes
+.release-steps.md
+AGENTS.md
+# macOS
+.DS_Store

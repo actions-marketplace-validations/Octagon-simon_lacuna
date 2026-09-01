@@ -2,6 +2,10 @@ import { Command } from '@oclif/core';
 export default class Analyze extends Command {
     static description: string;
     static examples: string[];
+    static args: {
+        path: import("@oclif/core/interfaces").Arg<string | undefined, Record<string, unknown>>;
+        scope: import("@oclif/core/interfaces").Arg<string | undefined, Record<string, unknown>>;
+    };
     static flags: {
         threshold: import("@oclif/core/interfaces").OptionFlag<number | undefined, import("@oclif/core/interfaces").CustomOptions>;
         format: import("@oclif/core/interfaces").OptionFlag<string, import("@oclif/core/interfaces").CustomOptions>;

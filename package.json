@@ -1,6 +1,6 @@
 {
   "name": "lacuna-cli",
-  "version": "0.1.5",
+  "version": "0.6.1",
   "description": "Agentic CLI that finds coverage gaps, generates tests, and verifies them in a loop",
   "keywords": [
     "testing",
@@ -19,16 +19,20 @@
   "files": [
     "/bin",
     "/dist",
-    "/oclif.manifest.json"
+    "/oclif.manifest.json",
+    "/lacuna.schema.json"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node scripts/generate-schema.mjs && oclif manifest .",
     "watch": "tsc -p tsconfig.json --watch",
     "lint": "eslint src --ext .ts",
     "format": "prettier --write 'src/**/*.ts'",
-    "test": "node --loader ts-node/esm --test src/**/*.test.ts",
+    "test": "node --loader ts-node/esm --test $(find src -name '*.test.ts')",
     "prepack": "npm run build",
-    "dev": "ts-node --esm src/index.ts"
+    "dev": "ts-node --esm src/index.ts",
+    "release": "bash scripts/release.sh",
+    "release:ext": "bash extension/scripts/release.sh",
+    "release:all": "bash scripts/release-all.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52.0",
@@ -45,9 +49,11 @@
     "@oclif/test": "^4",
     "@types/node": "^22",
     "eslint": "^9",
+    "oclif": "^4",
     "prettier": "^3",
     "ts-node": "^10",
-    "typescript": "^5"
+    "typescript": "^5",
+    "zod-to-json-schema": "^3.25.2"
   },
   "engines": {
     "node": ">=20.0.0"
@@ -58,7 +64,11 @@
     "commands": "./dist/commands",
     "plugins": [],
     "topicSeparator": " ",
-    "additionalVersionFlags": ["-V"],
-    "additionalHelpFlags": ["-h"]
+    "additionalVersionFlags": [
+      "-V"
+    ],
+    "additionalHelpFlags": [
+      "-h"
+    ]
   }
 }

@@ -14,6 +14,53 @@ function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, '').trim()
 }
 
+// Visible column width of a line (ANSI codes don't occupy columns). Not trimmed — leading
+// spaces count toward width and therefore toward how many terminal rows the line wraps to.
+function visibleWidth(s: string): number {
+  return s.replace(ANSI_RE, '').length
+}
+
+// How many physical terminal rows a single line (no embedded '\n') occupies at the given
+// width. A line longer than the terminal wraps onto multiple rows; the cursor-up count must
+// account for that or earlier wrapped rows are never cleared (the label re-prints every tick).
+function physicalRows(line: string, cols: number): number {
+  return Math.max(1, Math.ceil(visibleWidth(line) / cols))
+}
+
+// Physical rows the cursor sits BELOW the top of a just-written block. Splits on real '\n'
+// first — a label may itself contain newlines (e.g. a leading blank line for spacing), which
+// a per-logical-line count would miss, leaking a stray row every tick.
+function blockRows(out: string, cols: number): number {
+  const segments = out.split('\n')
+  let rows = 0
+  // The block is written without forcing a trailing newline beyond the final empty segment,
+  // so every segment except the last sits above the cursor's resting row.
+  for (let i = 0; i < segments.length - 1; i++) rows += physicalRows(segments[i], cols)
+  return rows
+}
+
+// Reads the runner's OWN authoritative end-of-run summary line instead of reconstructing a count
+// from individually streamed PASS/FAIL lines. The streamed reconstruction is fundamentally
+// fragile: jest prints a FAIL line twice per failing suite (live + its own "Summary of all
+// failing tests" recap) which needs de-duplicating, AND runner.ts's chunk-based line streaming
+// has no buffering across chunk boundaries, so a line can arrive split mid-text across two `data`
+// events — a garbled partial fragment can still spuriously match parseFileLine with a different
+// (truncated) path string, silently bypassing dedup. Both were observed live, producing "11
+// failed"/"7 failed" style over-counts against a real 5. The runner already computed the correct
+// numbers itself and printed them in its own summary line — reading that directly sidesteps the
+// entire class of bug rather than patching more edge cases into the reconstruction.
+function parseSummaryCounts(output: string): { passed: number; failed: number; total: number } | null {
+  const clean = stripAnsi(output)
+  // jest: "Test Suites: 5 failed, 120 passed, 125 total" (the "N failed," clause is entirely
+  // absent when nothing fails, so it's optional in the pattern).
+  const jest = clean.match(/Test Suites:\s+(?:(\d+)\s+failed,\s*)?(?:(\d+)\s+passed,\s*)?(\d+)\s+total/)
+  if (jest) return { failed: Number(jest[1] ?? 0), passed: Number(jest[2] ?? 0), total: Number(jest[3]) }
+  // vitest: "Test Files  1 failed | 5 passed (6)"
+  const vitest = clean.match(/Test Files\s+(?:(\d+)\s+failed\s*\|\s*)?(?:(\d+)\s+passed\s*)?\((\d+)\)/)
+  if (vitest) return { failed: Number(vitest[1] ?? 0), passed: Number(vitest[2] ?? 0), total: Number(vitest[3]) }
+  return null
+}
+
 function parseFileLine(line: string, runner: string): FileEntry | null {
   const clean = stripAnsi(line)
 
@@ -41,7 +88,11 @@ function parseFileLine(line: string, runner: string): FileEntry | null {
 
 export interface CoverageSpinner {
   onLine: (line: string) => void
-  stop: () => void
+  // finalOutput: the complete stdout+stderr of the finished run, when available — used to read
+  // the runner's own authoritative summary line instead of the streamed per-line reconstruction.
+  // Optional so call sites with nothing jest/vitest-shaped to parse (e.g. a bare tsc invocation)
+  // can omit it and fall back to the streamed tally.
+  stop: (finalOutput?: string) => void
 }
 
 export function startCoverageSpinner(label: string, runner = 'unknown'): CoverageSpinner {
@@ -50,13 +101,24 @@ export function startCoverageSpinner(label: string, runner = 'unknown'): Coverag
   let tick = 0
   let rendered = 0
   const files: FileEntry[] = []
+  // jest prints a FAIL <path> line TWICE for every failing suite by default — once live as the
+  // suite finishes, again in its own "Summary of all failing tests" recap at the end (standard
+  // jest behavior, not a bug in jest). Without dedup, every failing file gets counted twice here
+  // (PASS lines are never duplicated the same way), inflating both the failed-count and the
+  // total-file-count this spinner displays — e.g. 5 real failures/125 real files showing as
+  // "11 failed, 130 files". parseFailingTestFiles (fix-loop.ts) already dedupes correctly via a
+  // Set for the actual fix queue; this tally is a separate, independent display-only count that
+  // needs the same treatment. Keep the FIRST entry seen per file (the live one) and ignore the
+  // recap repeat.
+  const seenFiles = new Set<string>()
 
   if (!isTTY) {
     process.stdout.write(label + '\n')
     return {
       onLine: (line) => {
         const entry = parseFileLine(line, runner)
-        if (entry) {
+        if (entry && !seenFiles.has(entry.file)) {
+          seenFiles.add(entry.file)
           process.stdout.write(`  ${entry.passed ? '✓' : '✗'}  ${entry.file}\n`)
         }
       },
@@ -69,7 +131,11 @@ export function startCoverageSpinner(label: string, runner = 'unknown'): Coverag
 
     const secs = Math.floor((Date.now() - start) / 1000)
     const frame = chalk.cyan(FRAMES[tick % FRAMES.length])
-    const cols = Math.max(60, process.stdout.columns ?? 80)
+    // `cols` (min 60) governs how aggressively file paths are truncated; `realCols` is the
+    // ACTUAL terminal width and must drive the wrap/row math — using the clamped value would
+    // under-count rows on a terminal narrower than 60 and re-introduce the un-cleared lines.
+    const realCols = Math.max(1, process.stdout.columns || 80)
+    const cols = Math.max(60, realCols)
     const lines: string[] = []
 
     lines.push(`${label}  ${frame}  ${chalk.dim(secs + 's')}`)
@@ -89,7 +155,9 @@ export function startCoverageSpinner(label: string, runner = 'unknown'): Coverag
     lines.push('')
     const out = lines.join('\n')
     process.stdout.write(out)
-    rendered = (out.match(/\n/g) ?? []).length
+    // Count PHYSICAL rows of the actual written text (wrap-aware AND newline-safe), not the
+    // logical line array — a label with an embedded '\n' would otherwise be under-counted.
+    rendered = blockRows(out, realCols)
   }
 
   const timer = setInterval(() => { tick++; render() }, 100)
@@ -98,15 +166,25 @@ export function startCoverageSpinner(label: string, runner = 'unknown'): Coverag
   return {
     onLine: (line) => {
       const entry = parseFileLine(line, runner)
-      if (entry) { files.push(entry); render() }
+      if (entry && !seenFiles.has(entry.file)) {
+        seenFiles.add(entry.file)
+        files.push(entry)
+        render()
+      }
     },
-    stop: () => {
+    stop: (finalOutput) => {
       clearInterval(timer)
       if (rendered > 0) { process.stdout.write(`\x1B[${rendered}A\x1B[0J`); rendered = 0 }
       const secs = Math.floor((Date.now() - start) / 1000)
-      const total = files.length
-      const passed = files.filter(f => f.passed).length
-      const failed = total - passed
+      // Prefer the runner's own authoritative summary line over the streamed reconstruction —
+      // see parseSummaryCounts's comment for why the reconstruction is fragile. This is
+      // DISPLAY-ONLY: it changes what text gets printed here, nothing else. The actual list of
+      // failing files used to decide what gets fixed is parseFailingTestFiles (fix-loop.ts),
+      // an entirely separate function that already dedupes correctly and is untouched by this.
+      const authoritative = finalOutput ? parseSummaryCounts(finalOutput) : null
+      const total = authoritative?.total ?? files.length
+      const passed = authoritative?.passed ?? files.filter(f => f.passed).length
+      const failed = authoritative?.failed ?? (total - passed)
       const summary = total > 0
         ? `  ${chalk.dim(`${passed} passed${failed > 0 ? `, ${failed} failed` : ''}, ${total} files — ${secs}s`)}`
         : chalk.dim(`  done in ${secs}s`)
